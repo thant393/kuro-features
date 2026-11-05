@@ -7,7 +7,10 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.telegram.messenger.ApplicationLoader;
+import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ContactsController;
+import org.telegram.messenger.NotificationCenter;
+import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.UserObject;
 import org.telegram.tgnet.TLRPC;
@@ -18,7 +21,66 @@ import java.util.Collections;
 import tw.kurocore.kurogram.feature.ContactChanges;
 
 /** Contact Changes: detects name / profile photo changes of the contacts and keeps the log and the snapshot. */
-public final class ContactChangesImpl implements ContactChanges {
+public final class ContactChangesImpl implements ContactChanges, NotificationCenter.NotificationCenterDelegate {
+
+    private static final long DEBOUNCE_MS = 3000;
+
+    private final java.util.concurrent.CopyOnWriteArrayList<Runnable> listeners = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final boolean[] pending = new boolean[UserConfig.MAX_ACCOUNT_COUNT];
+    private boolean started;
+
+    /** App-wide monitor: watches every account for contact name / photo updates, even when the screen is closed. */
+    @Override
+    public void onAppStart(Context app) {
+        AndroidUtilities.runOnUIThread(() -> {
+            if (started) {
+                return;
+            }
+            started = true;
+            for (int a = 0; a < UserConfig.MAX_ACCOUNT_COUNT; a++) {
+                NotificationCenter nc = NotificationCenter.getInstance(a);
+                nc.addObserver(this, NotificationCenter.updateInterfaces);
+                nc.addObserver(this, NotificationCenter.contactsDidLoad);
+            }
+        });
+    }
+
+    @Override
+    public void didReceivedNotification(int id, int account, Object... args) {
+        if (account < 0 || account >= pending.length || pending[account]) {
+            return;
+        }
+        if (id == NotificationCenter.updateInterfaces) {
+            int mask = args.length > 0 && args[0] instanceof Integer ? (Integer) args[0] : 0;
+            int relevant = org.telegram.messenger.MessagesController.UPDATE_MASK_AVATAR | org.telegram.messenger.MessagesController.UPDATE_MASK_NAME;
+            if ((mask & relevant) == 0) {
+                return;
+            }
+        }
+        if (!UserConfig.getInstance(account).isClientActivated()) {
+            return;
+        }
+        // updateInterfaces fires very often: look at most once every few seconds per account
+        pending[account] = true;
+        AndroidUtilities.runOnUIThread(() -> {
+            pending[account] = false;
+            try {
+                checkForChanges(account);
+            } catch (Exception e) {
+                org.telegram.messenger.FileLog.e(e);
+            }
+        }, DEBOUNCE_MS);
+    }
+
+    @Override
+    public void addListener(Runnable listener) {
+        listeners.addIfAbsent(listener);
+    }
+
+    @Override
+    public void removeListener(Runnable listener) {
+        listeners.remove(listener);
+    }
 
     @Override
     public boolean isAvailable() {
@@ -53,18 +115,27 @@ public final class ContactChangesImpl implements ContactChanges {
     }
 
     @Override
-    public void clearLog() {
+    public synchronized void clearLog() {
         saveLog(new ArrayList<>());
     }
 
     @Override
-    public boolean checkForChanges(int account) {
+    public synchronized boolean checkForChanges(int account) {
         ArrayList<Entry> entries = log();
         if (detect(account, entries)) {
             saveLog(entries);
+            notifyListeners();
             return true;
         }
         return false;
+    }
+
+    private void notifyListeners() {
+        AndroidUtilities.runOnUIThread(() -> {
+            for (Runnable r : listeners) {
+                r.run();
+            }
+        });
     }
 
     private void saveLog(ArrayList<Entry> logEntries) {
