@@ -20,5 +20,7 @@ public final class FeaturesBootstrap implements FeaturesProvider {
     @Override
     public void register(Registrar registrar) {
         registrar.themes(new ThemeStoreImpl());
+        registrar.specialContacts(new SpecialContactsImpl());
+        registrar.contactChanges(new ContactChangesImpl());
     }
 }

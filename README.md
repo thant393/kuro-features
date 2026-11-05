@@ -25,3 +25,5 @@ Add it to the core as a git submodule at `kuro-features/`:
 | Feature | Class |
 |---|---|
 | Kuro Themes (Theme Store) | `ThemeStoreImpl` |
+| Special Contacts | `SpecialContactsImpl` |
+| Contact Changes | `ContactChangesImpl` |
